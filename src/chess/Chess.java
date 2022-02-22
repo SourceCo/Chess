@@ -1,11 +1,14 @@
 package chess;
 import processing.core.*;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import com.github.bhlangonijr.chesslib.*;
 import com.github.bhlangonijr.chesslib.game.*;
 import com.github.bhlangonijr.chesslib.move.*;
 import com.github.bhlangonijr.chesslib.pgn.*;
 import com.github.bhlangonijr.chesslib.unicode.*;
 import com.github.bhlangonijr.chesslib.util.*;
+import java.util.Random;
 import java.util.List;
 import java.util.ArrayList;
 public class Chess extends PApplet {
@@ -36,6 +39,22 @@ public class Chess extends PApplet {
 	public int startx = 0, starty = 0;
 	public boolean dragging = false;
 	public boolean highlightSquares = true;
+	public TextField textbox, seedbox;
+	public boolean isHost = false;
+	public boolean isPlaying = false;
+	public String code = "";
+	public ChessServer sketch;
+	public boolean setClient = true;
+	public static int[] seeds;
+	public static int index;
+	public boolean setSeed = true;
+	public static char[][] permutation = {
+			  {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.'},
+			  {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '},
+			  {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '},
+			  {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '},
+			  {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '}
+			  };
 	public static Square[][] boardRepresentationWhite = {
 			{Square.A8, Square.B8, Square.C8, Square.D8, Square.E8, Square.F8, Square.G8, Square.H8},
 			{Square.A7, Square.B7, Square.C7, Square.D7, Square.E7, Square.F7, Square.G7, Square.H7},
@@ -66,6 +85,9 @@ public class Chess extends PApplet {
 	List<int[]> flaggedSquares = new ArrayList<int[]>();
 	List<Arrow> arrows = new ArrayList<Arrow>();
 	public float scl = 0;
+	public Button host, joiner;
+	public boolean displayJoinCode = false;
+	public boolean startServer = true;
 public void settings() {
 	size(800, 800, P2D);
   }
@@ -73,10 +95,40 @@ public static void main(String[] args) {
 	String[] processingArgs = {"Chess"};
 	Chess mySketch = new Chess();
 	PApplet.runSketch(processingArgs, mySketch);
-//	PApplet.runSketch(new String[] {"ChessServer"}, new ChessServer());
 }
 public void setup() {
+	Random rand = new Random(69420);
+	seeds = toIntArray(loadStrings("seeds.txt"));
+	index = floor(random(70000));
+	randomSeed(index);
+	//just an array of 44 characters
+	char[] arr = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '@', '#', '$', '%', '-', '&', '_', '+'};
+	for(int i = 0; i < arr.length; i++) {
+		arr[i] = Character.toUpperCase(arr[i]);
+	}
+	//scrambles the contents randomly
+	arr = scrambleContents(arr);
+	//turn it into an 11x4 array
+	char[][] arr2 = decodeBoard(arr, 11, 4);
+	char[][] codes = new char[11][4];
+	//4 chars in each column of the permutation table
+	//these 4 characters in each column determine encoding characters for numbers in the ip address
+	//example: 1 -> a, 6, $, 9
+	//used to encode and decode ip addresses
+	for(int i = 0; i < codes.length; i++) {
+		codes[i][0] = arr2[i][0];
+		codes[i][1] = arr2[i][1];
+		codes[i][2] = arr2[i][2];
+		codes[i][3] = arr2[i][3];
+	}
+	//codes array is used to create the permutation table
+	for(int i = 0; i < codes.length; i++) {
+		for(int j = 0; j < 4; j++) {
+			permutation[j+1][i] = codes[i][j];
+		}
+	}
 	board = new Board();
+	//sets the color scheme and player perspective
 	setPerspective(Side.WHITE);
 	if(colorScheme == CHESSCOM) {
 	lightSquare = color(234, 233, 210);
@@ -101,6 +153,7 @@ public void setup() {
 	    lHighlightColor = color(235, 126, 106);
 	    dHighlightColor = color(212, 109, 80);
 	}
+	//load image data
 	  iwKing = loadImage("data/wK.png");
 	  iwQueen = loadImage("data/wQ.png");
 	  iwRook = loadImage("data/wR.png");
@@ -127,11 +180,76 @@ public void setup() {
 	  ibBishop.resize(tileSize, tileSize);
 	  surface.setLocation(100, 100);
 	  surface.setResizable(false);
-	  client = new Client(this, "127.0.0.1", ChessServer.port);
-	  setPerspective(client.side);
+	  //calculates the "scale" of arrows, or how far they should be extended before intersecting the
+	  //arrow's triangle. messy and a silly thing to do, but it is used for arrow transparency
 	  scl = calcScl(tileSize/4, tileSize/5);
+	  //creates the GUI elements
+	  textbox = new TextField(this, new PVector(width/2 + 148, height/2 - 12), new PVector(100, 30));
+	  seedbox = new TextField(this, new PVector(width/2 + 148, height/2 + 36), new PVector(100, 30));
+	  host = new Button(this, "Host a Game");
+	  host.setBackground(color(0, 255, 0));
+	  host.setBounds((int) (width/3.5f), (int) (height/2), 150, 50);
+	  joiner = new Button(this, "Join a Game");
+	  joiner.setBackground(color(255, 0, 0));
+	  joiner.setBounds((int) (width/2f), (int) (height/2), 150, 50);
   }
+public void updatePermutationTable(int seed) {
+	//this just updates the permutation table. see line 104 for a detailed explanation
+	index = seed;
+	randomSeed(index);
+	char[] arr = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '@', '#', '$', '%', '-', '&', '_', '+'};
+	for(int i = 0; i < arr.length; i++) {
+		arr[i] = Character.toUpperCase(arr[i]);
+	}
+	arr = scrambleContents(arr);
+	char[][] arr2 = decodeBoard(arr, 11, 4);
+	char[][] codes = new char[11][4];
+	for(int i = 0; i < codes.length; i++) {
+		codes[i][0] = arr2[i][0];
+		codes[i][1] = arr2[i][1];
+		codes[i][2] = arr2[i][2];
+		codes[i][3] = arr2[i][3];
+	}
+	for(int i = 0; i < codes.length; i++) {
+		for(int j = 0; j < 4; j++) {
+			permutation[j+1][i] = codes[i][j];
+		}
+	}
+}
+public char[] scrambleContents(char[] arr) {
+	//creates an array of indices in the array using the non repeating random number generator.
+	//"scrambles" them according to the indices randomly generated within the array.
+	char[] ret = new char[arr.length];
+	int[] indices = nonRepeatingRNG(0, arr.length);
+	for(int i = 0; i < arr.length; i++) {
+		ret[i] = arr[indices[i]];
+	}
+	return ret;
+}
+public char randomChar() {
+	//returns a random alphanumeric character
+	boolean letter = random(0, 1) >= 0.5f;
+	return letter ? Character.forDigit(floor(random(0, 10)), 10) : Character.toUpperCase(randomLetter());
+}
+public int[] toIntArray(String[] arr) {
+	//turns an array of string integers into an array of integers ("69420" -> 69420)
+	int[] ret = new int[arr.length];
+	for(int i = 0; i < arr.length; i++) {
+		ret[i] = Integer.parseInt(arr[i]);
+	}
+	return ret;
+}
+public String[] toStringArray(int[] arr) {
+	//turns an array of integers into an array of string integers (69420 -> "69420")
+	String[] ret = new String[arr.length];
+	for(int i = 0; i < arr.length; i++) {
+		ret[i] = "" + arr[i];
+	}
+	return ret;
+}
 public void setPerspective(Side side) {
+	//sets the player's perspective and defines the array of squares represented as the board
+	//also sets up the numbers and letters used to mark the board squares
 	perspective = side;
 	boardRepresentation = perspective == Side.WHITE ? boardRepresentationWhite : boardRepresentationBlack;
 	if(perspective == Side.BLACK) {
@@ -146,12 +264,16 @@ public void setPerspective(Side side) {
 		letters = "abcdefgh";
 	}
 }
+//main loop of the game
 public void draw() {
 	background(49, 46, 43);
     showBoard();
+    if(isPlaying) {
+    	//turns the board into a character array to display images
     char[][] map = decodeBoard(board.toStringFromViewPoint(perspective).toCharArray(), 8, 9);
     for (int i = 0; i < 8; i++) {
         for (int j = 0; j < 8; j++) {
+        	//displays images according to the piece on the current square in the loop
           if (map[j][i] != ' ') {
             if (map[j][i] == bPawn) {
               image(ibPawn, (i*tileSize), (j*tileSize));
@@ -181,26 +303,182 @@ public void draw() {
           }
         }
       }   
+    //this checks if the opponent has made a move
     if(client.available() > 0) {
    byte[] move = client.readBytes(); 
-   if(move.length > 1) {
+   //just checks if all the requisite arguments are there
+   if(move.length > 3) {
    if(decodeInt(move[5]) != perspective) doOpponentMove(move[0], move[1], move[2], move[3], move[4]);
-   } else {
-   	if(move[0] < 2) {
-	  	  client.side = random(0, 1) >= 0.5 ? Side.WHITE : Side.BLACK;
-	  	  takenSide = client.side;
-	  	  setPerspective(client.side);
-	    } else {
-	  	setPerspective(opposite(takenSide));
-	    }
    }
    client.clear();
+      }
+    } else {
+    	//if not playing currently, this is the gui and server connection section
+    	if(!displayJoinCode) {
+    		//display the buttons to give an option of whether to join a game or host a game
+    	host.show();
+    	joiner.show();
+    	} else {
+    		//if the server isn't already instantiated, no need to do it again
+          if(sketch != null) {
+        	  //if the server has more than 1 client, then that means we can start the game
+    		if(sketch.clients > 1) {
+    			isPlaying = true;
+    			client.side = random(0, 1) > 0.5f ? Side.WHITE : Side.BLACK;
+    			setPerspective(client.side);
+    			//sends a byte to the opponent pertaining to the side they are playing so that the opponent 
+    			//plays the opposite side
+    			client.write(new byte[] {(byte) (client.side == Side.WHITE ? 69 : 70)});
+    		  }
+    		}
+    		if(isHost) {
+    			if(startServer) {
+    				//if you're the host, then this code starts the server
+    				sketch = new ChessServer();
+    				PApplet.runSketch(new String[] {"ChessServer"}, sketch);
+    				try {
+    					//creates a new client to connect to the server on your ip address.
+						client = new Client(this, InetAddress.getLocalHost().getHostAddress(), ChessServer.port);
+//    					client = new Client(this, "127.0.0.1", ChessServer.port);
+					} catch (Exception e) {
+						e.printStackTrace();
+					}
+    				//generates a code based on the permutation table generated earlier
+    				code += generateCode();
+    				startServer = false;
+    			} else {
+    				//gui
+    				pushStyle();
+    				textSize(24);
+    				fill(0);
+    				stroke(0);
+    				textAlign(CENTER, CENTER);
+    				text("Send this code to your friends: " + code, width/2, height/2);
+    				text("Game server seed: " + index, width/2, height/2 + 30);
+    				popStyle();
+    			}
+    		} else {
+    			//more gui
+    			pushStyle();
+				textSize(24);
+				fill(0);
+				stroke(0);
+				textAlign(CENTER, CENTER);
+				text("Input game code here:", width/2, height/2);
+				textbox.show();
+				text("Input seed here:", width/2, height/2 + 48);
+				seedbox.show();
+				popStyle();
+	    		byte val = 0;
+	    		//if you finish typing in the textfield to enter the seed, then update the permutation table based on it
+	    		if(seedbox.text != "" && !seedbox.selected && !textbox.selected && setSeed) {
+	    			updatePermutationTable(Integer.parseInt(seedbox.text));
+	    			setSeed = false;
+	    		}
+	    		//if you finish typing in the code for the game then connect to the server after decoding it into an ip address
+	    		if(textbox.text != "" && !textbox.selected && !seedbox.selected && setClient) {
+	    			client = new Client(this, decodeCode(textbox.text), ChessServer.port);
+	    			setClient = false;
+	    		}
+	    		//sets your color based on the other player's color (opposite of theirs)
+	    		if(client != null) {
+	    			byte[] data = client.readBytes();
+	    			if(data != null) {
+	    		val = data[0];
+	    		if(val != 0) {
+	    			isPlaying = true;
+	    			if(val == 69) {
+	    				client.side = Side.BLACK;
+	    				setPerspective(client.side);
+	    			} else if(val == 70) {
+	    				client.side = Side.WHITE;
+	    				setPerspective(client.side);
+	    			}
+	    		}
+	    		client.clear();
+	    			}
+	    		}
+    		}
+    	}
     }
   }
-void restart() {
-	board = new Board();
+public int[] nonRepeatingRNG(int min, int max) {
+	//non repeating random number generator
+	 int[] list = new int[max];
+	 ArrayList<Integer> remaining = new ArrayList<Integer>();
+	 for(int i = 0; i < max; i++) {
+	   remaining.add(i, i);
+	 }
+	 for(int i = 0; i < list.length; i++) {
+	  int rand = floor(random((remaining.size() - 1) + 1 - min) + min);
+	  int chosen = remaining.get(rand);
+	  remaining.remove(rand);
+	  list[i] = chosen;
+	 }
+	 return list;
+	}
+public int countOccurrences(String s, char c) {
+	//counts occurrences of a character c in string s
+	int occurrences = 0;
+	for(int i = 0; i < s.length(); i++) {
+		if(s.charAt(i) == c) occurrences++;
+	}
+	return occurrences;
+}
+public String generateCode() {
+	//generates a code based on the server's ip address
+	String str = "";
+	String ip = client.ip();
+	int len = ip.length();
+	int dotLoop = 4;
+	int[] occurrences = new int[10];
+	for(int i = 0; i < occurrences.length; i++) {
+		occurrences[i] = countOccurrences(ip, (char)(i+'0'));
+	}
+	//uses the permutation table to turn an ip address into an encrypted address
+	for(int i = 0; i < len; i++) {
+		char target = ip.charAt(i);
+		if(target == '.') {
+			str += Character.toUpperCase(permutation[dotLoop][10]);
+			dotLoop--;
+		} else {
+			int asDigit = Integer.parseInt(Character.toString(target));
+			str += Character.toUpperCase(permutation[occurrences[asDigit]][asDigit]);
+			occurrences[asDigit]--;
+		}
+	}
+	return str;
+}
+public String decodeCode(String c) {
+	//decodes the code input by the person joining a server into an ip address to connect to
+	//of course, it uses the permutation table
+	String str = "";
+	for(int i = 0; i < c.length(); i++) {
+		str += characterMatchPermutation(c.charAt(i));
+	}
+	return str;
+}
+public char characterMatchPermutation(char c) {
+	//does char c match one of the characters in the permutation table? 
+	//if so, return the character at the top of the column it's in
+	for(int i = 1; i < permutation.length; i++) {
+		for(int j = 0; j < permutation[i].length; j++) {
+			if(permutation[i][j] == c) {
+				return permutation[0][j];
+			}
+		}
+	}
+	return c;
+}
+public char randomLetter() {
+	//returns a random letter
+	String abcs = "abcdefghijklmnopqrstuvwxyz";
+	return abcs.charAt(floor(random(0, 26)));
 }
 public void mousePressed() {
+	//function is called when the mouse is pressed
+	//the player uses it to make moves
+	if(isPlaying) {
 	if(mouseButton == LEFT) {
 		flaggedSquares.clear();
 		arrows.clear();
@@ -222,6 +500,7 @@ public void mousePressed() {
 		move = new Move(boardRepresentation[y][x], boardRepresentation[y1][x1], p);
 	}
 	if(board.isMoveLegal(move, true)) {
+	//plays the move on the board and sends it to the server
 	board.doMove(move);
 	client.write(new byte[]{(byte) x, (byte) y, (byte) x1, (byte) y1, pieceToInt(move.promotion), (byte) (perspective == Side.WHITE ? 1 : 0)});
 	click = false;
@@ -232,6 +511,7 @@ public void mousePressed() {
 	  }
 	}
   } else {
+	  //adds flagged squares when the right mouse button is pressed
 	  int[] square = new int[2];
 	    square[0] = constrain(round(mouseX/tileSize), 0, 7);
 		square[1] = constrain(round(mouseY/tileSize), 0, 7);
@@ -240,9 +520,20 @@ public void mousePressed() {
 		} else {
 			flaggedSquares.remove(flaggedSquares.indexOf(getSquare(square)));
 		}
-  }
+      }
+	} else {
+		if(host.mouseEntered) {
+			displayJoinCode = true;
+			isHost = true;
+		} else if(joiner.mouseEntered) {
+			displayJoinCode = true;
+			isHost = false;
+		}
+	}
 }
 public void mouseDragged() {
+	//if the mouse is dragged, create an arrow
+	//*only if the mouse is dragged AND the right mouse button is pressed
 	if(!dragging) {
 		int[] square = new int[2];
 	    square[0] = constrain(round(mouseX/tileSize), 0, 7);
@@ -255,9 +546,12 @@ public void mouseDragged() {
 	}
 }
 public boolean equals(int[] a, int[] b) {
+	//memory addresses between 2 arrays are different
+	//this function compares their contents
 	return a[0] == b[0] && a[1] == b[1];
 }
 public void mouseReleased() {
+	//makes an arrow if the right mouse button is released after dragging it
 	if(mouseButton == RIGHT) {
 		dragging = false;
 		int a = constrain(round(mouseX/tileSize), 0, 7);
@@ -275,12 +569,15 @@ public void mouseReleased() {
 	  }
 }
 public boolean cardinal(int a, int b, int a1, int b1) {
+	//is there a cardinal direction specified from the absolute value of
+	//the change in x and y? (N, E, S, W)
 	PVector inc = new PVector(abs(a - a1), abs(b - b1));
 	if(inc.x == 0 && inc.y != 0) return true;
 	if(inc.y == 0 && inc.x != 0) return true;
 	return false;
 }
 public boolean diagonal(int a, int b, int a1, int b1) {
+	//is the change in x and y equal?
 	return abs(a - a1) == abs(b - b1);
 }
 public float calcScl(float d, float weight) {
@@ -297,15 +594,21 @@ public float calcScl(float d, float weight) {
 	return d / ((tileSize/2) - (d/2) - weight);
 }
 public void drawArrow(Arrow arrow) {
+	//d is the triangle width, weight is the size of the line
 	float d = tileSize/4;
 	float weight = tileSize/5;
+	//slope between the start and endpoints of the arrow
 	PVector slope = new PVector(arrow.end.x - arrow.start.x, arrow.end.y - arrow.start.y);
+	//normalizes the slope vector to a unit vector
 	slope.normalize();
+	//multiplies it by the scale calculated in calcScl()
 	slope.mult(scl);
 	slope.x = abs(slope.x);
 	slope.y = abs(slope.y);
 	int fillCol = color(255, 128, 0, 160);
+	//slope v2
 	PVector inc = new PVector(abs(arrow.start.x - arrow.end.x), abs(arrow.start.y - arrow.end.y));
+	//this chunk of code determines where to start and end the arrow lines
 	float d1 = arrow.tileDist.x < 0 ? (-d/scl) : (d/scl);
 	float d2 = arrow.tileDist.y < 0 ? (-d/scl) : (d/scl);
 	if(arrow.isCardinalArrow) {
@@ -316,6 +619,7 @@ public void drawArrow(Arrow arrow) {
 	if(arrow.tileDist.y == 0) d2 = 0;
 	pushStyle();
 	if(!arrow.isKnightArrow) {
+	//a is the angle that the triangle is rotated by (slope of the arrow converted to an angle)
     float a = atan2(arrow.start.x-arrow.end.x, arrow.end.y-arrow.start.y);
 	pushMatrix();
 	stroke(fillCol);
@@ -330,16 +634,14 @@ public void drawArrow(Arrow arrow) {
 	}
 	noStroke();
 	fill(fillCol);
-//	rect(arrow.start.x-(weight/2), arrow.start.y-(weight/2), weight, weight);
-//	rect(arrow.end.x-(weight/2), arrow.end.y-(weight/2), weight, weight);
   translate(arrow.end.x, arrow.end.y);
 	rotate(a);
 	fill(fillCol);
 	triangle(-d, -d, d, -d, 0, d/2);
 	popMatrix();
 	} else {
+		//draws a knight arrow
 		if(inc.x < inc.y) {
-//		float a = atan2(0, arrow.end.y-arrow.start.y);
 		float a = atan2(arrow.start.x-arrow.end.x, 0);
 		float a2 = arrow.tileDist.x > 0 ? weight/2 : -weight/2;
 		float a3 = arrow.tileDist.y > 0 ? weight/2 : -weight/2;
@@ -350,7 +652,6 @@ public void drawArrow(Arrow arrow) {
 	    line(arrow.start.x, arrow.start.y, arrow.start.x, arrow.end.y + a2);
 		noStroke();
 		fill(fillCol);
-//		rect(arrow.start.x-(weight/2), arrow.start.y-(weight/2), weight, weight);
 	  translate(arrow.end.x, arrow.end.y);
 		rotate(a);
 		fill(fillCol);
@@ -363,8 +664,6 @@ public void drawArrow(Arrow arrow) {
 	  line(arrow.start.x + a3, arrow.end.y, arrow.end.x + d11, arrow.end.y);
 		noStroke();
 		fill(fillCol);
-//		rect(arrow.start.x-(weight/2), arrow.start.y-(weight/2), weight, weight);
-//		rect(arrow.start.x-(weight/2), arrow.end.y-(weight/2), weight, weight);
 		popMatrix();
 		} else {
 			float a = atan2(0, arrow.end.y-arrow.start.y);
@@ -377,7 +676,6 @@ public void drawArrow(Arrow arrow) {
 		  line(arrow.start.x, arrow.start.y, arrow.end.x + a2, arrow.start.y);
 			noStroke();
 			fill(fillCol);
-//			rect(arrow.start.x-(weight/2), arrow.start.y-(weight/2), weight, weight);
 		  translate(arrow.end.x, arrow.end.y);
 			rotate(a);
 			fill(fillCol);
@@ -391,41 +689,48 @@ public void drawArrow(Arrow arrow) {
 		  line(arrow.end.x, arrow.start.y + a3, arrow.end.x, arrow.end.y + d21);
 			noStroke();
 			fill(fillCol);
-//			rect(arrow.start.x-(weight/2), arrow.start.y-(weight/2), weight, weight);
-//			rect(arrow.end.x-(weight/2), arrow.start.y-(weight/2), weight, weight);
 			popMatrix();
 		}
 	}
 	popStyle();
 }
 public boolean isKnightMove(int a, int b, int a1, int b1) {
+	//does the distance between vector <a, b> and <a1, b1> resemble that of a knight move
+	//(2 squares in 1 direction, 2 squares in the other)
 	return (abs(a - a1) == 2 && abs(b - b1) == 1) || (abs(a - a1) == 1 && abs(b - b1) == 2);
 }
 boolean isInFlaggedSquares(int[] square) {
+	//compares contents of int[] square and all the squares in the flagged squares 
 	for(int[] sq : flaggedSquares) {
 		if(sq[0] == square[0] && sq[1] == square[1]) return true;
 	} 
 	return false;
 }
 boolean isInArrows(Arrow arrow) {
+	//same concept as isInFlaggedSquares() but with arrows
 	for(Arrow a : arrows) {
 		if(arrow.start.equals(a.start) && arrow.end.equals(a.end) && a.isKnightArrow == arrow.isKnightArrow) return true;
 	} 
 	return false;
 }
 int[] getSquare(int[] square) {
+	//if int[] square is equal to any of the squares in the flagged squares, then return its clone in the
+	//flagged squares arraylist. used for the removal of squares in the flagged squares
 	for(int[] sq : flaggedSquares) {
 		if(sq[0] == square[0] && sq[1] == square[1]) return sq;
 	} 
 	return null;
 }
 Arrow getArrow(Arrow arrow) {
+	//same concept as getSquare() but with arrows
 	for(Arrow a : arrows) {
 		if(arrow.start.equals(a.start) && arrow.end.equals(a.end) && a.isKnightArrow == arrow.isKnightArrow) return a;
 	} 
 	return null;
 }
 public void doOpponentMove(int ox, int oy, int ox1, int oy1, int p) {
+	//does the opponent's move based on input received from the client
+	try {
 	Square[][] Board = perspective == Side.WHITE ? boardRepresentationBlack : boardRepresentationWhite;
 	opx = sevenToZero(ox);
 	opy = sevenToZero(oy);
@@ -433,12 +738,12 @@ public void doOpponentMove(int ox, int oy, int ox1, int oy1, int p) {
 	opy1 = sevenToZero(oy1);
 	Move move = new Move(Board[oy][ox], Board[oy1][ox1], intToPiece(p));
 	board.doMove(move);
+	} catch (Exception e) {
+		
+	}
 }
 public int sevenToZero(int num) {
 	return 7 - num;
-}
-public Piece charToPiece(char p) {
-	return Piece.fromFenSymbol(Character.toString(p));
 }
 public Piece intToPiece(int piece) {
 	switch(piece) {
@@ -650,6 +955,7 @@ public Side opposite(Side side) {
 	return side == Side.WHITE ? Side.BLACK : Side.WHITE;
 }
 public void highlight(int x2, int y2) {
+	//if square at x2 and y2 is empty, highlight it
 	if (board.getPiece(boardRepresentation[y2][x2]) != Piece.NONE) {
 	if ((x2 + y2) % 2 == 0) {
         fill(lSquareColor);
@@ -660,6 +966,7 @@ public void highlight(int x2, int y2) {
 	}
 }
 public void highlight(int x2, int y2, int col1, int col2) {
+	//highlight the square at x2, y2 with colors col1 and col2 regardless of it being empty or not
 	if ((x2 + y2) % 2 == 0) {
         fill(col1);
       } else {
@@ -668,6 +975,7 @@ public void highlight(int x2, int y2, int col1, int col2) {
       rect(x2*tileSize, y2*tileSize, tileSize, tileSize);
 }
 List<int[]> movesFromSquare(Square sq) {
+	//get a list of legal moves from Square sq
 	List<int[]> moves = new ArrayList<int[]>();
 	List<Move> legalMoves = board.legalMoves();
 	for(Move move : legalMoves) {
@@ -693,10 +1001,19 @@ public char[][] decodeBoard( final char[] array, final int rows, final int cols 
 
     return bidi;
 }
-public void printBoard(char[][] b) {
-	  for (int j = 0; j < 8; j++) {
+public void printArr(char[][] b) {
+	  for (int j = 0; j < b.length; j++) {
 	    String rank = "";
-	    for (int i = 0; i < 9; i++) {
+	    for (int i = 0; i < b[j].length; i++) {
+	      rank += "|" + b[j][i] + "|";
+	    }
+	    println(rank);
+	  }
+	}
+public void printBoard(char[][] b) {
+	  for (int j = 0; j < b.length; j++) {
+	    String rank = "";
+	    for (int i = 0; i < b[j].length; i++) {
 	      if (b[j][i] == bKing) {
 	        rank += "|k|";
 	      } else if (b[j][i] == bQueen) {
